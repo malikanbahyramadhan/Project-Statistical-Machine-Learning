@@ -1,0 +1,240 @@
+---
+title: "Project sml 2"
+author: "Malikan Bahy Ramadhan / 3338240019 / 4A"
+date: "2026-06-05"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+# Panggil library
+library(tidyverse)
+library(fpc)
+library(cluster)
+library(factoextra)
+library(mclust)
+library(dbscan)
+
+#INPUT DATA
+# Definisikan URL dan nama kolom
+url_data <- "https://archive.ics.uci.edu/ml/machine-learning-databases/autos/imports-85.data"
+nama_kolom <- c(
+  "symboling", "normalized_losses", "make", "fuel_type", "aspiration",
+  "num_of_doors", "body_style", "drive_wheels", "engine_location", "wheel_base",
+  "length", "width", "height", "curb_weight", "engine_type",
+  "num_of_cylinders", "engine_size", "fuel_system", "bore", "stroke",
+  "compression_ratio", "horsepower", "peak_rpm", "city_mpg", "highway_mpg", "price"
+)
+
+# Membaca data
+mobil <- read_csv(url_data, col_names = nama_kolom, na = "?")
+head(mobil) # Diubah ke head() agar tidak mencetak ribuan baris di Word
+
+#PRE-PROCESSING
+# A. Menghapus semua baris yang mengandung NA
+auto_clean <- mobil %>% drop_na()
+
+# Mengubah kolom karakter/kategorikal menjadi faktor
+auto_clean_1 <- auto_clean %>% mutate(across(where(is.character), as.factor))
+head(auto_clean_1)
+
+# B. Scaling Data Numerik
+auto_num <- auto_clean_1 %>% select(where(is.numeric))
+auto_scale <- scale(auto_num)
+head(auto_scale)
+
+# PROSES CLUSTERING & PENENTUAN K OPTIMAL
+# 1. VISUALISASI ELBOW METHOD
+fviz_nbclust(auto_scale, kmeans, method = "wss") +
+  labs(subtitle = "Elbow Method")
+
+# 2. VISUALISASI SILHOUETTE METHOD
+fviz_nbclust(auto_scale, kmeans, method = "silhouette") +
+  labs(subtitle = "Silhouette Method")
+
+# METODE PARTITIONING CLUSTERING (K-Means)
+set.seed(123) # Mengunci random state agar hasil konsisten
+km_model <- kmeans(auto_scale, centers = 2)
+
+# Melihat jumlah anggota tiap cluster
+table(km_model$cluster)
+
+# Visualisasi Hasil K-Means
+fviz_cluster(km_model, data = auto_scale, geom = "point", 
+             main = "K-Means Clustering (2 Centers)")
+
+# METODE DBSCAN
+# 1. Tentukan nilai EPS (mencari knee-point/titik siku)
+dbscan::kNNdistplot(auto_scale, k = 2)
+abline(h = 3.5, col = "red", lty = 2)
+
+# 2. Jalankan DBSCAN
+db_model <- dbscan::dbscan(auto_scale, eps = 3.5, minPts = 2)
+
+# Melihat hasil cluster (0 = noise/outlier)
+table(db_model$cluster)
+
+# Visualisasi DBSCAN
+fviz_cluster(db_model, data = auto_scale, geom = "point", 
+             main = "DBSCAN Clustering")
+
+# PROSES MODEL-BASED CLUSTERING (GMM)
+# Menjalankan GMM menggunakan fungsi Mclust()
+gmm_model <- Mclust(auto_scale)
+
+# Menampilkan ringkasan hasil pemodelan
+summary(gmm_model)
+
+# Mengambil label cluster untuk setiap baris data
+gmm_clusters <- gmm_model$classification
+
+# Melihat jumlah mobil di tiap cluster
+table(gmm_clusters)
+
+# Visualisasi hasil clustering GMM
+fviz_cluster(gmm_model, geom = "point", 
+             main = "Model-Based Clustering")
+
+# PROSES SPECTRAL CLUSTERING
+# Langkah 1: Menghitung Similarity Matrix 
+similarity_matrix <- exp(-as.matrix(dist(auto_scale))^2)
+
+# Langkah 2 & 3: Melakukan Dekomposisi Spektra
+eigen_result <- eigen(similarity_matrix)
+
+# Menentukan jumlah cluster (k = 2)
+k <- 2
+
+# Mengekstrak top-k eigenvectors
+k_eigenvectors <- eigen_result$vectors[, 1:k]
+
+# Langkah 4: Melakukan K-Means Clustering pada Eigenvectors
+set.seed(123)
+cluster_assignments <- kmeans(k_eigenvectors, centers = k)
+
+# Mengambil label cluster untuk setiap baris data mobil
+spectral_clusters <- cluster_assignments$cluster
+
+# Melihat jumlah mobil di tiap cluster
+table(spectral_clusters)
+
+# Visualisasi hasil Spectral Clustering
+fviz_cluster(list(data = auto_scale, cluster = spectral_clusters), 
+             geom = "point", 
+             main = "Spectral Clustering (k = 2)")
+
+# VALIDASI INTERNAL (SILHOUETTE WIDTH)
+# Membuat matriks jarak Euclidean dari data numerik asli sebagai basis validasi
+jarak_validasi <- dist(auto_scale)
+
+# Menghitung statistik validasi untuk masing-masing model menggunakan cluster.stats()
+# Bagian validasi di bawah ini disesuaikan dengan objek cluster dari pemodelan di atas
+val_km   <- cluster.stats(jarak_validasi, km_model$cluster)
+val_db   <- cluster.stats(jarak_validasi, db_model$cluster)
+val_gmm  <- cluster.stats(jarak_validasi, gmm_clusters)
+val_spec <- cluster.stats(jarak_validasi, spectral_clusters)
+
+# Menggabungkan nilai Average Silhouette Width ke dalam satu tabel
+tabel_validasi <- data.frame(
+  Metode_Clustering = c("K-Means", "DBSCAN", "Model-Based (GMM)", "Spectral Clustering"),
+  Avg_Silhouette_Score = c(val_km$avg.silwidth, val_db$avg.silwidth, val_gmm$avg.silwidth, val_spec$avg.silwidth)
+)
+
+# Menampilkan hasil perbandingan skor validasi
+print("--- HASIL PERBANDINGAN VALIDASI INTERNAL (SILHOUETTE WIDTH) ---")
+knitr::kable(tabel_validasi)
+
+# VISUALISASI PERBANDINGAN MODEL
+# Mengatur tampilan plot menjadi 2 baris dan 3 kolom agar bisa dilihat bersamaan
+par(mfrow = c(2, 3))
+
+# Plot 2: K-Means
+fviz_cluster(list(data = auto_scale, cluster = km_model$cluster), geom = "point", main = "2. K-Means (k=2)")
+
+# Plot 3: DBSCAN
+fviz_cluster(list(data = auto_scale, cluster = db_model$cluster), geom = "point", main = "3. DBSCAN (eps=3.5)")
+
+# Plot 4: Model-Based (GMM)
+fviz_cluster(gmm_model, geom = "point", main = "4. Model-Based GMM (G=2)")
+
+# Plot 5: Spectral Clustering
+fviz_cluster(list(data = auto_scale, cluster = spectral_clusters), geom = "point", main = "5. Spectral Clustering (k=2)")
+
+# Mengembalikan pengaturan plot ke default
+par(mfrow = c(1, 1))
+```
+
+
+BAB I: INPUT DATA DAN SUMBER DATA
+
+Analisis pengelompokan (clustering) ini menggunakan dataset publik Automobile/Imports 1985 yang diperoleh langsung dari UCI Machine Learning Repository. Dataset ini berisi karakteristik fisik, teknis mekanis, serta estimasi harga dari berbagai spesifikasi mobil.
+
+Proses input data dilakukan secara real-time di R menggunakan fungsi read_csv() dengan mendefinisikan 26 nama kolom secara manual guna memberikan struktur tabel yang jelas. Tanda tanya (?) pada data mentah secara eksplisit didefinisikan sebagai nilai hilang (NA) agar tidak mengacaukan tipe data.
+
+
+BAB II: PRE-PROCESSING DATA DAN JUSTIFIKASI SCALING
+
+Sebelum algoritma clustering dijalankan, data melalui dua tahapan kritis pre-processing:
+
+1. Penanganan Missing Values (Drop NA): Guna menjaga objektivitas dan pemisahan spasial yang akurat, seluruh baris data yang mengandung missing values (NA) dieliminasi menggunakan fungsi drop_na().
+
+2. Justifikasi Pentingnya Scaling (Standardisasi Z-Score):Dataset ini didominasi oleh variabel numerik yang memiliki satuan dan rentang nilai yang sangat timpang. Sebagai contoh, variabel harga (price) memiliki nilai hingga puluhan ribu, kapasitas tenaga (horsepower) bernilai ratusan, sedangkan dimensi tinggi kendaraan (height) hanya bernilai pulihan. Jika data langsung digunakan tanpa transformasi, perhitungan jarak Euclidean pada algoritma K-Means atau DBSCAN akan didominasi secara mutlak oleh variabel berangka besar (price), sehingga variabel dimensi fisik yang krusial akan diabaikan. Oleh karena itu, opsi menggunakan scaling manual lewat fungsi scale() wajib dilakukan. Transformasi ini menyamakan rata-rata (mean) menjadi 0 dan standar deviasi menjadi 1 untuk seluruh fitur numerik, sehingga setiap variabel berkontribusi secara adil (equal weight) dalam pembentukan klaster.
+
+
+BAB III: PENENTUAN JUMLAH CLUSTER OPTIMAL ($K$)
+
+Untuk menentukan jumlah kelompok ($k$) yang paling merepresentasikan struktur data, digunakan dua pendekatan eksploratif:
+
+1. Elbow Method (Metode Siku): Berdasarkan grafik Total Within Sum of Square (WCSS) yang dieksekusi, terjadi penurunan variansi internal yang sangat drastis dan curam dari $k=1$ ke $k=2$. Tepat di titik $k=2$, sudut grafik melandai secara signifikan (membentuk lekukan siku). Penambahan cluster ke angka 3 dan seterusnya memberikan penurunan yang relatif konstan dan lambat. Hal ini mengindikasikan bahwa secara mekanis, pembagian data menjadi 2 kelompok sudah sangat efisien.
+
+2. Silhouette Method: Selaras dengan metode Elbow, grafik rata-rata Silhouette Score yang dihasilkan menunjuk langsung bahwa puncak tertinggi (skor kohesi dan separasi spasial terbaik) berada pada jumlah cluster $k = 2$.
+
+Kesimpulan Tahap Eksplorasi: Melalui konvergensi hasil Elbow dan Silhouette, maka jumlah cluster ditetapkan sebanyak $k = 2$.
+
+
+BAB IV: ANALISIS DAN VALIDASI INTERNAL MODEL
+
+Setelah memproses data numerik hasil scaling ke dalam beberapa algoritma machine learning dengan parameter $k=2$, efektivitas pembentukan kelompok diuji menggunakan kriteria Average Silhouette Width (validasi internal) lewat fungsi cluster.stats():
+
+- K-Means Clustering: Menghasilkan skor tertinggi sebesar 0.3289. Hal ini membuktikan bahwa algoritma K-Means berhasil mengelompokkan data secara solid dengan batas antar kelompok yang paling jelas pada ruang metrik Euclidean.
+
+- Model-Based Clustering (GMM): Menghasilkan skor 0.2230. Pemodelan probabilistik berbasis distribusi campuran Gaussian ini bekerja cukup baik, namun masih di bawah performa K-Means.
+
+- DBSCAN: Menghasilkan skor 0.1698. Nilai ini lebih rendah karena DBSCAN mendeteksi beberapa data pencilan sebagai noise (Cluster 0), yang secara otomatis mengurangi nilai rata-rata kekuatan klaster secara global.
+
+- Spectral Clustering: Menghasilkan skor negatif yaitu -0.0143. Nilai di bawah 0 menandakan terjadinya banyak misclustering (data berada di batas klaster yang salah), sehingga dekomposisi graf tidak direkomendasikan untuk karakteristik dataset ini.
+
+
+BAB V: INTERPRETASI DAN PROFILING CLUSTER (MODEL TERBAIK: K-MEANS)
+
+Karena K-Means terbukti sebagai model dengan performa struktur terbaik (skor 0.3289), interpretasi karakteristik riil difokuskan pada hasil partisi K-Means. Algoritma secara natural membagi kendaraan menjadi dua segmen pasar yang bertolak belakang:
+
+1. Cluster 1: Kelompok Mobil Kota / Ekonomis (City Car & Kompak)
+
+- Karakteristik Fisik: Mobil-mobil pada klaster ini memiliki dimensi fisik yang kompak (panjang, lebar, dan jarak sumbu roda yang kecil) serta bobot kendaraan (curb_weight) yang cenderung ringan.
+
+- Performa Mekanis: Dibekali dengan kapasitas mesin (engine size) yang kecil, jumlah silinder yang sedikit, serta tenaga kuda (horsepower) yang rendah hingga moderat.
+
+- Efisiensi Bahan Bakar: Memiliki nilai mil per galon harian (city_mpg) dan luar kota (highway_mpg) yang sangat tinggi. Cluster ini merepresentasikan barisan kendaraan yang sangat hemat bahan bakar.
+
+- Nilai Ekonomis: Memiliki tingkat kerugian penyusutan risiko yang stabil (normalized_losses) dan dipasarkan pada rentang harga (price) yang murah dan ekonomis.
+
+2. Cluster 2: Kelompok Mobil Mewah & Performa Tinggi (Luxury Executive & Sports Car)
+
+- Karakteristik Fisik: Memiliki karakteristik bodi yang bongsor dan kokoh (jarak sumbu roda panjang, bodi lebar) serta bobot kendaraan (curb_weight) yang berat karena material premium dan kompleksitas komponen pendukung.
+
+- Performa Mekanis: Memiliki jantung mekanis yang agresif dengan ukuran mesin besar (engine_size), jumlah silinder banyak, serta letupan tenaga kuda (horsepower) yang masif untuk mengejar kecepatan tinggi.
+
+- Efisiensi Bahan Bakar: Nilai city_mpg dan highway_mpg berada pada tingkat yang sangat rendah (konsumsi bahan bakar cenderung boros akibat kompensasi performa mesin).
+
+- Nilai Ekonomis: Menempati segmen pasar premium dengan harga jual (price) yang tinggi/mahal. Cluster ini mengelompokkan mobil-mobil kelas atas (luxury) dan varian sport.
+
+
+BAB VI: KESIMPULAN
+
+Berdasarkan rangkaian analisis statistik yang telah dilakukan pada dataset Imports 1985, keputusan untuk menggunakan scaling data adalah langkah pre-processing yang krusial untuk menghilangkan bias akibat ketimpangan satuan angka variabel numerik.
+
+Melalui pengujian parameter, disimpulkan bahwa jumlah kelompok terbaik adalah $k = 2$. Berdasarkan metrik validasi internal, K-Means Clustering dinobatkan sebagai algoritma paling optimal dengan kemampuan segmentasi terbaik (skor 0.3289). Hasil klasterisasi ini secara nyata berhasil memetakan industri otomotif tahun 1985 menjadi dua kutub fungsional, yaitu kelompok kendaraan harian yang efisien/ekonomis (Cluster 1) dan kelompok kendaraan premium dengan performa mekanis tinggi (Cluster 2).
